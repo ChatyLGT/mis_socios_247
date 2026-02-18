@@ -1,0 +1,15 @@
+# Entorno Virtual
+venv/
+__pycache__/
+*.pyc
+
+# Archivos de Datos y Bóveda
+shared_memory.json
+vault_*
+*.ogg
+*.jpg
+*.pdf
+*.docx
+
+# Variables de Entorno (Donde irán tus llaves)
+.env

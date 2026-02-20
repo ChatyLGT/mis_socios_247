@@ -1,88 +1,139 @@
-import os, asyncio, datetime
+import os
+from datetime import datetime
 from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
-import vault_manager
-from agentes import javier, rene, ana, marce
+from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+import db
 
-# CARGA DE SECRETOS DESDE .ENV
 load_dotenv()
-os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY")
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-contexto_socios = {}
-SOCIOS = {
-    "javier": {"nombre": "Javier (Legal)", "mod": javier},
-    "javi": {"nombre": "Javier (Legal)", "mod": javier},
-    "rene": {"nombre": "René (IT)", "mod": rene},
-    "rené": {"nombre": "René (IT)", "mod": rene},
-    "ana": {"nombre": "Ana (Negocios)", "mod": ana},
-    "marce": {"nombre": "Marce (Ventas)", "mod": marce}
-}
+# --- SISTEMA DE LOGS OMNISCIENTE ---
+def log_event(evento, usuario, detalle=""):
+    hora = datetime.now().strftime("%H:%M:%S")
+    print(f"[{hora}] 🟢 {evento} | User: {usuario} | {detalle}")
 
-async def ejecutar_agente(socio_data, msg, texto_usuario, contexto_file):
-    nombre = socio_data['nombre']
-    print(f"🧠 {nombre} PENSANDO...")
-    try:
-        loop = asyncio.get_event_loop()
-        prompt = f"Gunnar dice: '{texto_usuario}'. Contexto archivo: '{contexto_file}'. RESPONDÉ BREVE Y COMO SOCIO PORTEÑO."
-        res = await loop.run_in_executor(None, socio_data['mod'].ejecutar, prompt, contexto_file)
-        print(f"🤖 RESPUESTA DE {nombre}:\n{res}")
-        await msg.reply_text(f"*{nombre}*:\n{res}", parse_mode='Markdown')
-        return True
-    except Exception as e:
-        print(f"❌ ERROR EN {nombre}: {e}")
-        return False
-
-async def handle_everything(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message: return
-    user_id = update.message.from_user.id
-    msg = update.message
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    telegram_id = user.id
+    log_event("COMANDO /start", user.first_name)
     
-    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-    texto_usuario = msg.text or msg.caption or ""
-    print(f"\n--- [LOG {timestamp}] INTERACCIÓN ---")
-
-    file_path = None
-    if msg.voice:
-        file_path = f"vault_{user_id}.ogg"
-        file = await msg.voice.get_file()
-    elif msg.photo and len(msg.photo) > 0:
-        file_path = f"vault_{user_id}.jpg"
-        file = await msg.photo[-1].get_file()
-    elif msg.document:
-        file_path = msg.document.file_name
-        file = await msg.document.get_file()
-
-    contexto_file = ""
-    if file_path:
-        await file.download_to_drive(file_path)
-        contexto_file = vault_manager.analizar_archivo(file_path, "Sistema")
-
-    texto_total = (texto_usuario + " " + contexto_file).lower()
-    es_grupal = any(x in texto_total for x in ["todos", "equipo", "muchachos", "consejo", "board"])
-
-    if es_grupal:
-        await msg.reply_text("🎙️ *Iniciando sesión de consejo...*", parse_mode='Markdown')
-        for clave in ["rene", "ana", "javier", "marce"]:
-            await ejecutar_agente(SOCIOS[clave], msg, texto_usuario, contexto_file)
-            await asyncio.sleep(1)
-    else:
-        for clave, data in SOCIOS.items():
-            if clave in texto_total:
-                contexto_socios[user_id] = data
-                break
+    db_user = db.obtener_usuario(telegram_id)
+    
+    if not db_user:
+        log_event("NUEVO USUARIO", user.first_name, "Creando registro en BD...")
+        db.crear_usuario(telegram_id)
+        db.actualizar_campo_usuario(telegram_id, "nombre_completo", user.full_name)
         
-        socio_actual = contexto_socios.get(user_id)
-        if socio_actual:
-            await ejecutar_agente(socio_actual, msg, texto_usuario, contexto_file)
+        boton_contacto = [[KeyboardButton("📱 Compartir mi WhatsApp", request_contact=True)]]
+        reply_markup = ReplyKeyboardMarkup(boton_contacto, one_time_keyboard=True, resize_keyboard=True)
+        
+        await update.message.reply_text(
+            f"¡Hola {user.first_name}! Bienvenido a tu Sistema de Aceleración y Abundancia Integral. 🚀\n\n"
+            "Para iniciar tu transformación y crear tu perfil seguro, necesito que valides tu número tocando el botón de abajo:",
+            reply_markup=reply_markup
+        )
+        log_event("MENSAJE ENVIADO", user.first_name, "Petición de WhatsApp enviada.")
+    else:
+        log_event("USUARIO RECURRENTE", user.first_name)
+        if db_user['status_legal']:
+            await update.message.reply_text("¡Qué bueno verte de nuevo! Tu ecosistema ya está activo. 🚀")
         else:
-            await msg.reply_text("¿Con quién hablo? (Javier, René, Ana o Marce)")
+            await enviar_tyc(update.message)
 
-    if file_path and os.path.exists(file_path): os.remove(file_path)
+async def recibir_contacto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    telegram_id = user.id
+    telefono = update.message.contact.phone_number
+    log_event("WHATSAPP RECIBIDO", user.first_name, f"Número capturado: {telefono}")
+    
+    db.actualizar_campo_usuario(telegram_id, "telefono_whatsapp", telefono)
+    
+    await update.message.reply_text(
+        "¡Teléfono verificado con éxito! ✅", 
+        reply_markup=ReplyKeyboardRemove()
+    )
+    await enviar_tyc(update.message)
+
+async def enviar_tyc(message):
+    teclado = [[InlineKeyboardButton("✅ Acepto mi Transformación", callback_data="acepto_tyc")]]
+    reply_markup = InlineKeyboardMarkup(teclado)
+    await message.reply_text(
+        "Último paso antes de entrar.\n\n"
+        "Al continuar, aceptas nuestros Términos de Confidencialidad. Tu información y la de tu negocio están blindadas.",
+        reply_markup=reply_markup
+    )
+
+async def boton_inline(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = update.effective_user
+    await query.answer()
+    
+    if query.data == "acepto_tyc":
+        telegram_id = user.id
+        log_event("TYC ACEPTADOS", user.first_name, "Cambiando status_legal a TRUE en BD")
+        db.actualizar_campo_usuario(telegram_id, "status_legal", True)
+        
+        await query.edit_message_text(
+            "¡Contrato firmado! 🖋️\n\n"
+            "Tu perfil está creado y tu Tanque de Gasolina está al 100%.\n\n"
+            "*(Fin de la Prueba Sprint 1. Acá entrará el Hostess en el siguiente paso)*"
+        )
+
+async def eraseall(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    telegram_id = user.id
+    
+    if not context.args or context.args[0] != "Chaty2026":
+        log_event("INTENTO BORRADO FALLIDO", user.first_name, "Contraseña incorrecta o ausente")
+        await update.message.reply_text("⛔ Comando no autorizado o contraseña incorrecta.")
+        return
+
+    log_event("BOTÓN DE PÁNICO", user.first_name, "Borrando usuario de la BD (ON DELETE CASCADE)")
+    db.borrar_usuario(telegram_id)
+    
+    await update.message.reply_text(
+        "💥 ¡Booooom! Tu perfil, tus datos y tu memoria han sido borrados de la Matrix.\n\n"
+        "El sistema ahora te reconoce como un completo desconocido. Escribe /start para volver a nacer.",
+        reply_markup=ReplyKeyboardRemove()
+    )
+
+async def catch_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    telegram_id = user.id
+    texto = update.message.text if update.message.text else "Archivo Multimedia/Sticker"
+    log_event("CATCH-ALL TRIGGER", user.first_name, f"Input recibido: '{texto}'")
+    
+    db_user = db.obtener_usuario(telegram_id)
+    
+    if not db_user:
+        # El usuario no existe en la BD
+        await update.message.reply_text(
+            "¡Hola! 👋 Para iniciar tu experiencia y configurar tu sistema, por favor presiona o escribe /start"
+        )
+    elif not db_user.get('status_legal'):
+        # El usuario existe, dio el teléfono, pero NO firmó
+        log_event("LIMBO LEGAL", user.first_name, "Reenviando Términos y Condiciones")
+        await update.message.reply_text(
+            "¡Ojo! 👀 Para continuar es necesario aceptar los Términos y Condiciones. Continuamos, acá te los dejo de nuevo:"
+        )
+        await enviar_tyc(update.message)
+    else:
+        # El usuario ya tiene todo en regla
+        await update.message.reply_text(
+            "¡Tu ecosistema está blindado y listo! 🚀\n(Fase de Onboarding en construcción para el Sprint 2)."
+        )
 
 if __name__ == '__main__':
-    print("🚀 SISTEMA SEGURO Y MODO SALA DE JUNTAS ONLINE.")
+    print("===========================================================")
+    print("🚀 [GATEKEEPER LOGS ACTIVOS] Sistema esperando interacciones...")
+    print("===========================================================")
     app = Application.builder().token(TOKEN).build()
-    app.add_handler(MessageHandler(filters.ALL, handle_everything))
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("eraseall", eraseall))
+    app.add_handler(MessageHandler(filters.CONTACT, recibir_contacto))
+    app.add_handler(CallbackQueryHandler(boton_inline))
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.CONTACT, catch_all))
+    
     app.run_polling()

@@ -1,16 +1,11 @@
-import psycopg2
+import os, psycopg2
 from psycopg2.extras import RealDictCursor
+from dotenv import load_dotenv
 
-DB_CONFIG = {
-    "dbname": "mis_socios",
-    "user": "bot_master",
-    "password": "Abundancia2026",
-    "host": "localhost",
-    "port": "5432"
-}
+load_dotenv()
 
 def get_connection():
-    return psycopg2.connect(**DB_CONFIG)
+    return psycopg2.connect(os.getenv("DATABASE_URL"))
 
 def obtener_usuario(telegram_id):
     conn = get_connection()
@@ -24,30 +19,55 @@ def obtener_usuario(telegram_id):
 def crear_usuario(telegram_id):
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO usuarios (telegram_id) VALUES (%s) RETURNING id;", 
-        (telegram_id,)
-    )
-    new_id = cur.fetchone()[0]
+    # Forzamos 'NUEVO' solo si el registro no existe
+    cur.execute("""
+        INSERT INTO usuarios (telegram_id, estado_onboarding) 
+        VALUES (%s, 'NUEVO') 
+        ON CONFLICT (telegram_id) DO NOTHING;
+    """, (telegram_id,))
     conn.commit()
     cur.close()
     conn.close()
-    return new_id
+
+def inicializar_adn(telegram_id):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO adn_negocios (usuario_id) SELECT id FROM usuarios WHERE telegram_id = %s ON CONFLICT DO NOTHING;", (telegram_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
 
 def actualizar_campo_usuario(telegram_id, campo, valor):
     conn = get_connection()
     cur = conn.cursor()
-    query = f"UPDATE usuarios SET {campo} = %s WHERE telegram_id = %s;"
+    cur.execute(f"UPDATE usuarios SET {campo} = %s WHERE telegram_id = %s;", (valor, telegram_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def actualizar_adn(telegram_id, campo, valor):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = f"UPDATE adn_negocios SET {campo} = %s WHERE usuario_id = (SELECT id FROM usuarios WHERE telegram_id = %s);"
     cur.execute(query, (valor, telegram_id))
     conn.commit()
     cur.close()
     conn.close()
 
+def obtener_contexto_negocio(telegram_id):
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT nombre_empresa FROM adn_negocios an JOIN usuarios u ON an.usuario_id = u.id WHERE u.telegram_id = %s", (telegram_id,))
+    res = cur.fetchone()
+    cur.close()
+    conn.close()
+    return res['nombre_empresa'] if res and res.get('nombre_empresa') else ""
+
 def borrar_usuario(telegram_id):
-    """Borra absolutamente todo el rastro del usuario de la Matrix"""
     conn = get_connection()
     cur = conn.cursor()
-    cur.execute("DELETE FROM usuarios WHERE telegram_id = %s;", (telegram_id,))
+    cur.execute("DELETE FROM adn_negocios WHERE usuario_id = (SELECT id FROM usuarios WHERE telegram_id = %s)", (telegram_id,))
+    cur.execute("DELETE FROM usuarios WHERE telegram_id = %s", (telegram_id,))
     conn.commit()
     cur.close()
     conn.close()

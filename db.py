@@ -1,4 +1,4 @@
-import os, psycopg2
+import os, psycopg2, json
 from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 
@@ -16,15 +16,56 @@ def obtener_usuario(telegram_id):
     conn.close()
     return user
 
-def crear_usuario(telegram_id):
+def crear_usuario(telegram_id, username=None, nombre_completo=None, language_code=None):
     conn = get_connection()
     cur = conn.cursor()
-    # Forzamos 'NUEVO' solo si el registro no existe
     cur.execute("""
-        INSERT INTO usuarios (telegram_id, estado_onboarding) 
-        VALUES (%s, 'NUEVO') 
-        ON CONFLICT (telegram_id) DO NOTHING;
-    """, (telegram_id,))
+        INSERT INTO usuarios (telegram_id, username, nombre_completo, language_code, estado_onboarding) 
+        VALUES (%s, %s, %s, %s, 'NUEVO') 
+        ON CONFLICT (telegram_id) DO UPDATE SET
+            username = EXCLUDED.username,
+            nombre_completo = EXCLUDED.nombre_completo,
+            language_code = EXCLUDED.language_code;
+    """, (telegram_id, username, nombre_completo, language_code))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def guardar_memoria_hilo(telegram_id, rol, contenido):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT historial_reciente FROM usuarios WHERE telegram_id = %s", (telegram_id,))
+    row = cur.fetchone()
+    historial = row[0] if row and row[0] else []
+    historial.append({"rol": rol, "txt": contenido})
+    historial = historial[-10:]
+    cur.execute("UPDATE usuarios SET historial_reciente = %s WHERE telegram_id = %s", (json.dumps(historial), telegram_id))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def obtener_adn_completo(telegram_id):
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    query = """
+        SELECT u.nombre_completo, u.email, u.estado_onboarding, u.historial_reciente,
+               an.nombre_empresa, an.rubro, an.dolor_principal, an.resumen_pepe,
+               an.estructura_equipo, an.personalidad_agentes, an.rutinas_trabajo
+        FROM usuarios u
+        LEFT JOIN adn_negocios an ON u.id = an.usuario_id
+        WHERE u.telegram_id = %s;
+    """
+    cur.execute(query, (telegram_id,))
+    res = cur.fetchone()
+    cur.close()
+    conn.close()
+    return res or {}
+
+def actualizar_adn(telegram_id, campo, valor):
+    conn = get_connection()
+    cur = conn.cursor()
+    query = f"UPDATE adn_negocios SET {campo} = %s WHERE usuario_id = (SELECT id FROM usuarios WHERE telegram_id = %s);"
+    cur.execute(query, (valor, telegram_id))
     conn.commit()
     cur.close()
     conn.close()
@@ -45,23 +86,9 @@ def actualizar_campo_usuario(telegram_id, campo, valor):
     cur.close()
     conn.close()
 
-def actualizar_adn(telegram_id, campo, valor):
-    conn = get_connection()
-    cur = conn.cursor()
-    query = f"UPDATE adn_negocios SET {campo} = %s WHERE usuario_id = (SELECT id FROM usuarios WHERE telegram_id = %s);"
-    cur.execute(query, (valor, telegram_id))
-    conn.commit()
-    cur.close()
-    conn.close()
-
 def obtener_contexto_negocio(telegram_id):
-    conn = get_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT nombre_empresa FROM adn_negocios an JOIN usuarios u ON an.usuario_id = u.id WHERE u.telegram_id = %s", (telegram_id,))
-    res = cur.fetchone()
-    cur.close()
-    conn.close()
-    return res['nombre_empresa'] if res and res.get('nombre_empresa') else ""
+    adn = obtener_adn_completo(telegram_id)
+    return adn.get('nombre_empresa', "")
 
 def borrar_usuario(telegram_id):
     conn = get_connection()

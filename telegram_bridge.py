@@ -1,50 +1,68 @@
-import os, asyncio
+import os, asyncio, tempfile
 from dotenv import load_dotenv
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 import db
 from core.borrado import ejecutar_borrado_total
 from core.registro import manejar_paso_registro
-from core.grabadora import log_terminal, obtener_info_mensaje
+from core.grabadora import log_terminal
+from core.parser import parsear_evento
 from flujos.onboarding_hostess import manejar_onboarding
+from flujos.pepe_flow import manejar_pepe
+from flujos.maria_flow import manejar_maria
+from flujos.josefina_flow import manejar_josefina
+from flujos.fausto_flow import manejar_fausto
 
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
+async def descargar_medio(update, context):
+    msg = update.message
+    file = None
+    if msg and msg.photo: file = await msg.photo[-1].get_file()
+    elif msg and msg.document: file = await msg.document.get_file()
+    elif msg and msg.voice: file = await msg.voice.get_file()
+    elif msg and msg.audio: file = await msg.audio.get_file()
+    if file:
+        ext = file.file_path.split('.')[-1]
+        path = os.path.join(tempfile.gettempdir(), f"{file.file_id}.{ext}")
+        await file.download_to_drive(path)
+        return path
+    return None
+
 async def catch_all(update, context):
+    identidad, tipo, contenido, user_data = parsear_evento(update)
     user = update.effective_user
-    if not user or not update.message: return
-    
-    # 1. Registro Obligatorio (Regla de Oro)
-    db.crear_usuario(user.id)
+    if not user: return
+
     db_user = db.obtener_usuario(user.id)
+    estado = db_user.get('estado_onboarding') if db_user else "NUEVO"
+    log_terminal(f"{tipo} | ESTADO: {estado}", identidad, contenido)
     
-    # Identidad: ID de Telegram es el ancla
-    nombre_log = db_user.get('nombre_completo') or f"ID:{user.id}"
-    tipo, contenido = obtener_info_mensaje(update)
-    
-    # 2. Lógica de Estados Blindada
-    estado_db = db_user.get('estado_onboarding')
-    # Si no tiene nombre y no ha aceptado TyC, lo forzamos a NUEVO o el estado que toque
-    if not estado_db or estado_db == 'WHATSAPP' and not db_user.get('telefono_whatsapp'):
-        if not estado_db: estado = "NUEVO"
-        else: estado = "WHATSAPP"
+    db.crear_usuario(user.id, user_data['username'], 
+                    f"{user_data['first_name'] or ''} {user_data['last_name'] or ''}".strip(), 
+                    user_data['language_code'])
+
+    file_path = await descargar_medio(update, context)
+
+    # RUTEADOR DE TITANIO (Regla #8: ADN Compartido)
+    if estado == "FAUSTO_ACTIVO":
+        await manejar_fausto(update, context, user.id, contenido)
+    elif estado == "JOSEFINA_ACTIVO":
+        await manejar_josefina(update, context, user.id, contenido)
+    elif estado == "MARIA_ACTIVO":
+        await manejar_maria(update, context, user.id, contenido)
+    elif estado == "PEPE_ACTIVO":
+        await manejar_pepe(update, context, user.id, contenido, file_path)
     else:
-        estado = estado_db
-
-    # Forzamos que si es el primer mensaje tras borrar, sea NUEVO
-    if not db_user.get('telefono_whatsapp') and not estado_db:
-        estado = "NUEVO"
-
-    log_terminal(f"{tipo} | ESTADO: {estado}", nombre_log, contenido)
-    await manejar_onboarding(update, context, user.id, estado, contenido)
+        # Aquí Sofía maneja: NUEVO, WHATSAPP, TYC, DATOS_GENERALES, CONFIRMACION, RESUMEN_FINAL
+        await manejar_onboarding(update, context, user.id, estado, contenido, file_path)
 
 async def manejar_callback(update, context):
+    identidad, tipo, contenido, user_data = parsear_evento(update)
     query = update.callback_query
     user = update.effective_user
-    db_user = db.obtener_usuario(user.id)
-    nombre_log = db_user.get('nombre_completo') or f"ID:{user.id}"
-    
-    log_terminal("CALLBACK", nombre_log, f"🔘 Clic en: {query.data}")
+    if not user: return
+    log_terminal(tipo, identidad, contenido)
     await query.answer()
 
     if query.data == "start_flow":
@@ -60,10 +78,10 @@ async def manejar_callback(update, context):
         await manejar_onboarding(update, context, user.id, "PASO_PEPE", "Confirmado")
     elif query.data == "ir_a_pepe":
         db.actualizar_campo_usuario(user.id, "estado_onboarding", "PEPE_ACTIVO")
-        await query.message.reply_text("🤝 **Sofy:** ¡Listo! Te dejé con Pepe.")
+        await manejar_pepe(update, context, user.id, "¡Hola Pepe! Presentate y decime qué vamos a hacer ahora.", None)
 
 if __name__ == '__main__':
-    print("🚀 [SISTEMA DE TITANIO] - Omnisciencia Selectiva Activada")
+    print("🚀 [SISTEMA DE TITANIO] - Ruteador Multi-Agente (Sofy-Pepe-Maria-Jose-Fausto) Activado")
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("eraseall", ejecutar_borrado_total))
     app.add_handler(CommandHandler("start", manejar_paso_registro))

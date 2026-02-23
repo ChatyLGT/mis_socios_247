@@ -1,17 +1,20 @@
-CREATE TABLE usuarios (
+CREATE TABLE IF NOT EXISTS usuarios (
     id SERIAL PRIMARY KEY,
     telegram_id BIGINT UNIQUE NOT NULL,
+    username VARCHAR(255),
     nombre_completo VARCHAR(255),
+    language_code VARCHAR(10),
     telefono_whatsapp VARCHAR(50),
     email VARCHAR(255),
     edad INTEGER,
     status_legal BOOLEAN DEFAULT FALSE,
+    estado_onboarding VARCHAR(100) DEFAULT 'NUEVO',
     fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     tanque_gasolina NUMERIC(5,2) DEFAULT 100.00,
     tier_suscripcion VARCHAR(50) DEFAULT 'TRIAL'
 );
 
-CREATE TABLE adn_negocios (
+CREATE TABLE IF NOT EXISTS adn_negocios (
     id SERIAL PRIMARY KEY,
     usuario_id INTEGER REFERENCES usuarios(id) ON DELETE CASCADE UNIQUE,
     nombre_empresa VARCHAR(255),
@@ -20,7 +23,7 @@ CREATE TABLE adn_negocios (
     liderazgo_rutinas TEXT
 );
 
-CREATE TABLE memoria_vectorial (
+CREATE TABLE IF NOT EXISTS memoria_vectorial (
     id SERIAL PRIMARY KEY,
     usuario_id INTEGER REFERENCES usuarios(id) ON DELETE CASCADE,
     agente_emisor VARCHAR(100),

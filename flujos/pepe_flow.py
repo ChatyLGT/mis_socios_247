@@ -1,4 +1,5 @@
-import db, re, os, asyncio
+import db, re, asyncio
+from core import obsidian
 from core.gemini_multimodal import procesar_texto_puro, procesar_multimodal
 from core.grabadora import log_bot_response, log_terminal
 from agentes import pepe
@@ -11,21 +12,20 @@ async def manejar_pepe(update, context, telegram_id, texto, file_path=None):
     historial = adn.get('historial_reciente') or []
     hilo_txt = "\n".join([f"{m['rol']}: {m['txt']}" for m in historial[-6:]]) if historial else "Sin historial aún."
     
-    # LA MEMORIA INMORTAL DE PEPE
-    memoria_largo_plazo = adn.get('notas_pepe', 'Aún no hay datos acumulados.')
+    # PEPE LEE SU ARCHIVO MARKDOWN DE LA BÓVEDA ANTES DE HABLAR
+    memoria_largo_plazo = obsidian.leer_documento(telegram_id, "02_diagnostico_pepe.md")
+    
     ctx_negocio = f"BÓVEDA ACTUAL: Socio {adn.get('nombre_completo', '')} | Negocio {adn.get('nombre_empresa', '')}\nMEMORIA LARGO PLAZO (TU RESUMEN ANTERIOR): {memoria_largo_plazo}"
     
     prompt = f"{pepe.obtener_prompt()}\n{ctx_negocio}\nHISTORIAL RECIENTE:\n{hilo_txt}"
     
     res_ia = ""
-    # EL TEATRO MULTIMODAL (UX)
+    # EL TEATRO MULTIMODAL
     if file_path:
-        await target.reply_text("⏳ *Pepe está analizando tu archivo/audio. Dame unos segundos...*", parse_mode="Markdown")
-        await asyncio.sleep(2) # Delay humano para dar realismo
+        await target.reply_text("⏳ *Pepe está analizando tu archivo. Dame unos segundos...*", parse_mode="Markdown")
+        await asyncio.sleep(2)
         res_ia, desc = await procesar_multimodal(file_path, prompt)
         log_terminal("👁️ PERCEPCIÓN", "PEPE", desc)
-        
-        # Le mostramos al usuario lo que Pepe entendió en crudo
         await target.reply_text(f"🧠 *Notas internas de Pepe:* \n_{desc}_", parse_mode="Markdown")
         db.guardar_memoria_hilo(telegram_id, "SOCIO", f"[Archivo Adjunto: {desc}] {texto}")
     else:
@@ -34,12 +34,12 @@ async def manejar_pepe(update, context, telegram_id, texto, file_path=None):
 
     print(f"\n--- 🕵️ FORENSE PEPE RAW ---\n{res_ia}\n-----------------------------\n")
 
-    # ATRAPAMOS EL RESUMEN ACUMULADO Y LO GUARDAMOS PARA SIEMPRE
+    # ATRAPAMOS EL RESUMEN Y LO ESCRIBIMOS EN EL ARCHIVO OBSIDIAN
     m_resumen = re.search(r'RESUMEN_ACUMULADO:\s*["\']?(.*?)["\']?(?=\n|$)', res_ia, re.IGNORECASE | re.DOTALL)
     if m_resumen:
         resumen_limpio = m_resumen.group(1).strip()
-        db.actualizar_adn(telegram_id, "notas_pepe", resumen_limpio)
-        print(f"💾 MEMORIA LARGO PLAZO GUARDADA: {resumen_limpio[:60]}...")
+        obsidian.guardar_documento(telegram_id, "02_diagnostico_pepe.md", resumen_limpio)
+        print(f"💾 ARCHIVO OBSIDIAN GUARDADO: 02_diagnostico_pepe.md -> {resumen_limpio[:60]}...")
 
     checklist_completo = False
     m_check = re.search(r'ESTADO_CHECKLIST:.*?rubro=[\'"]?([^\'"\n]+)[\'"]?.*?dolor=[\'"]?([^\'"\n]+)[\'"]?.*?modelo=[\'"]?([^\'"\n]+)[\'"]?', res_ia, re.IGNORECASE)
@@ -50,7 +50,7 @@ async def manejar_pepe(update, context, telegram_id, texto, file_path=None):
         if cr == "ok" and cd == "ok" and cm == "ok":
             checklist_completo = True
 
-    # Limpiamos la basura técnica
+    # Limpieza visual
     res_limpia = re.sub(r'(?i)(ESTADO_CHECKLIST|RESUMEN_ACUMULADO|DATOS_EXTRAIDOS).*', '', res_ia, flags=re.DOTALL).strip()
     db.guardar_memoria_hilo(telegram_id, "PEPE", res_limpia)
     log_bot_response("PEPE", res_limpia)

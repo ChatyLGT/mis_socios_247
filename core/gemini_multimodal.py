@@ -46,4 +46,4 @@ async def procesar_texto_puro(prompt_sistema, texto_usuario):
         )
         return response.text
     except Exception as e:
-        return "Error en mis neuronas."
+        print(f"🔥 ERROR GEMINI CRÍTICO: {e}"); print(f"🔥 ERROR GEMINI CRÍTICO: {e}"); return "Error en mis neuronas."

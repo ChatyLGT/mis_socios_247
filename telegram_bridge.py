@@ -38,13 +38,15 @@ async def catch_all(update, context):
     estado = db_user.get('estado_onboarding') if db_user else "NUEVO"
     log_terminal(f"{tipo} | ESTADO: {estado}", identidad, contenido)
     
-    db.crear_usuario(user.id, user_data['username'], 
-                    f"{user_data['first_name'] or ''} {user_data['last_name'] or ''}".strip(), 
-                    user_data['language_code'])
+    # TRIPLE CHECK: Solo creamos/sobrescribimos el perfil si es un usuario NUEVO.
+    # Si ya está en medio del onboarding, NO tocamos su nombre de la base de datos.
+    if estado == "NUEVO":
+        db.crear_usuario(user.id, user_data['username'], 
+                        f"{user_data['first_name'] or ''} {user_data['last_name'] or ''}".strip(), 
+                        user_data['language_code'])
 
     file_path = await descargar_medio(update, context)
 
-    # RUTEADOR DE TITANIO (Regla #8: ADN Compartido)
     if estado == "FAUSTO_ACTIVO":
         await manejar_fausto(update, context, user.id, contenido)
     elif estado == "JOSEFINA_ACTIVO":
@@ -54,7 +56,6 @@ async def catch_all(update, context):
     elif estado == "PEPE_ACTIVO":
         await manejar_pepe(update, context, user.id, contenido, file_path)
     else:
-        # Aquí Sofía maneja: NUEVO, WHATSAPP, TYC, DATOS_GENERALES, CONFIRMACION, RESUMEN_FINAL
         await manejar_onboarding(update, context, user.id, estado, contenido, file_path)
 
 async def manejar_callback(update, context):
@@ -73,9 +74,13 @@ async def manejar_callback(update, context):
         db.inicializar_adn(user.id)
         db.actualizar_campo_usuario(user.id, "estado_onboarding", "DATOS_GENERALES")
         await manejar_onboarding(update, context, user.id, "DATOS_GENERALES", "Acepto")
+    elif query.data == "enviar_generales":
+        await context.bot.send_message(chat_id=user.id, text="⏳ Entendido. Por favor, escribe tu Nombre, Correo y Negocio en un solo mensaje. Te estoy leyendo...")
     elif query.data == "confirmacion_ok":
         db.actualizar_campo_usuario(user.id, "estado_onboarding", "PASO_PEPE")
         await manejar_onboarding(update, context, user.id, "PASO_PEPE", "Confirmado")
+    elif query.data == "confirmacion_error":
+        await context.bot.send_message(chat_id=user.id, text="✏️ Entendido. Por favor, decime qué dato está mal y cuál es el correcto.")
     elif query.data == "ir_a_pepe":
         db.actualizar_campo_usuario(user.id, "estado_onboarding", "PEPE_ACTIVO")
         await manejar_pepe(update, context, user.id, "¡Hola Pepe! Presentate y decime qué vamos a hacer ahora.", None)

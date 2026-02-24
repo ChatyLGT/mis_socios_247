@@ -1,48 +1,65 @@
-import db, re
-from core.gemini_multimodal import procesar_texto_puro, describir_contenido_multimodal
+import db, re, os, asyncio
+from core.gemini_multimodal import procesar_texto_puro, procesar_multimodal
 from core.grabadora import log_bot_response, log_terminal
 from agentes import pepe
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 async def manejar_pepe(update, context, telegram_id, texto, file_path=None):
     target = update.message if update.message else update.callback_query.message
-    adn = db.obtener_adn_completo(telegram_id)
+    adn = db.obtener_adn_completo(telegram_id) or {}
     
-    # 1. PERCEPCIÓN: Si hay archivo, lo transcribimos/describimos primero
-    descripcion_archivo = ""
-    if file_path:
-        descripcion_archivo = await describir_contenido_multimodal(file_path)
-        log_terminal("👁️ PERCEPCIÓN", "MULTIMODAL", descripcion_archivo)
-    
-    # 2. Contextos
     historial = adn.get('historial_reciente') or []
-    hilo_txt = "\n".join([f"{m['rol']}: {m['txt']}" for m in historial])
-    ctx_negocio = f"BÓVEDA: Socio {adn.get('nombre_completo')} | Negocio {adn.get('nombre_empresa')} | Rubro {adn.get('rubro')}"
+    hilo_txt = "\n".join([f"{m['rol']}: {m['txt']}" for m in historial[-6:]]) if historial else "Sin historial aún."
     
-    # 3. Prompt con la "Verdad" del archivo inyectada
-    prompt_completo = f"""
-    {pepe.obtener_prompt()}
-    {ctx_negocio}
-    CONTENIDO DEL ARCHIVO RECIBIDO: {descripcion_archivo}
-    HISTORIAL: {hilo_txt}
-    MENSAJE ACTUAL: {texto}
-    """
+    # LA MEMORIA INMORTAL DE PEPE
+    memoria_largo_plazo = adn.get('notas_pepe', 'Aún no hay datos acumulados.')
+    ctx_negocio = f"BÓVEDA ACTUAL: Socio {adn.get('nombre_completo', '')} | Negocio {adn.get('nombre_empresa', '')}\nMEMORIA LARGO PLAZO (TU RESUMEN ANTERIOR): {memoria_largo_plazo}"
     
-    respuesta = await procesar_texto_puro(prompt_completo, texto)
+    prompt = f"{pepe.obtener_prompt()}\n{ctx_negocio}\nHISTORIAL RECIENTE:\n{hilo_txt}"
     
-    # 4. Extracción de Datos
-    for reg, col in [(r'RUBRO=["\'](.*?)["\']', "rubro"), (r'DOLOR=["\'](.*?)["\']', "dolor_principal")]:
-        m = re.search(reg, respuesta, re.IGNORECASE)
-        if m: db.actualizar_adn(telegram_id, col, m.group(1))
+    res_ia = ""
+    # EL TEATRO MULTIMODAL (UX)
+    if file_path:
+        await target.reply_text("⏳ *Pepe está analizando tu archivo/audio. Dame unos segundos...*", parse_mode="Markdown")
+        await asyncio.sleep(2) # Delay humano para dar realismo
+        res_ia, desc = await procesar_multimodal(file_path, prompt)
+        log_terminal("👁️ PERCEPCIÓN", "PEPE", desc)
+        
+        # Le mostramos al usuario lo que Pepe entendió en crudo
+        await target.reply_text(f"🧠 *Notas internas de Pepe:* \n_{desc}_", parse_mode="Markdown")
+        db.guardar_memoria_hilo(telegram_id, "SOCIO", f"[Archivo Adjunto: {desc}] {texto}")
+    else:
+        res_ia = await procesar_texto_puro(prompt, texto)
+        db.guardar_memoria_hilo(telegram_id, "SOCIO", texto)
 
-    if "FINALIZAR_CONSULTORIA: MARIA" in respuesta:
-        db.actualizar_campo_usuario(telegram_id, "estado_onboarding", "MARIA_ACTIVO")
-        res_limpia = re.sub(r'(FINALIZAR_CONSULTORIA|RUBRO|DOLOR):.*', '', respuesta, flags=re.IGNORECASE | re.DOTALL).strip()
-        await target.reply_text(f"<b>Pepe:</b> {res_limpia}\n\n🤝 <i>Pasando con María...</i>", parse_mode="HTML")
-        return
+    print(f"\n--- 🕵️ FORENSE PEPE RAW ---\n{res_ia}\n-----------------------------\n")
 
-    res_limpia = re.sub(r'(RUBRO|DOLOR):.*', '', respuesta, flags=re.IGNORECASE | re.DOTALL).strip()
-    db.guardar_memoria_hilo(telegram_id, "SOCIO", f"{texto} [Archivo: {descripcion_archivo}]")
+    # ATRAPAMOS EL RESUMEN ACUMULADO Y LO GUARDAMOS PARA SIEMPRE
+    m_resumen = re.search(r'RESUMEN_ACUMULADO:\s*["\']?(.*?)["\']?(?=\n|$)', res_ia, re.IGNORECASE | re.DOTALL)
+    if m_resumen:
+        resumen_limpio = m_resumen.group(1).strip()
+        db.actualizar_adn(telegram_id, "notas_pepe", resumen_limpio)
+        print(f"💾 MEMORIA LARGO PLAZO GUARDADA: {resumen_limpio[:60]}...")
+
+    checklist_completo = False
+    m_check = re.search(r'ESTADO_CHECKLIST:.*?rubro=[\'"]?([^\'"\n]+)[\'"]?.*?dolor=[\'"]?([^\'"\n]+)[\'"]?.*?modelo=[\'"]?([^\'"\n]+)[\'"]?', res_ia, re.IGNORECASE)
+    if m_check:
+        cr, cd, cm = m_check.groups()
+        cr, cd, cm = cr.strip().lower(), cd.strip().lower(), cm.strip().lower()
+        print(f"📋 PEPE CHECKLIST -> Rubro: {cr} | Dolor: {cd} | Modelo: {cm}")
+        if cr == "ok" and cd == "ok" and cm == "ok":
+            checklist_completo = True
+
+    # Limpiamos la basura técnica
+    res_limpia = re.sub(r'(?i)(ESTADO_CHECKLIST|RESUMEN_ACUMULADO|DATOS_EXTRAIDOS).*', '', res_ia, flags=re.DOTALL).strip()
     db.guardar_memoria_hilo(telegram_id, "PEPE", res_limpia)
-    
     log_bot_response("PEPE", res_limpia)
-    await target.reply_text(f"<b>Pepe:</b> {res_limpia}", parse_mode="HTML")
+
+    if checklist_completo:
+        teclado = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Quiero dar más contexto", callback_data="pepe_mas_contexto")],
+            [InlineKeyboardButton("🚀 Todo claro, avanzar con María", callback_data="pepe_avanzar_maria")]
+        ])
+        await target.reply_text(f"<b>Pepe:</b> {res_limpia}", reply_markup=teclado, parse_mode="HTML")
+    else:
+        await target.reply_text(f"<b>Pepe:</b> {res_limpia}", parse_mode="HTML")

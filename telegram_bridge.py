@@ -38,8 +38,6 @@ async def catch_all(update, context):
     estado = db_user.get('estado_onboarding') if db_user else "NUEVO"
     log_terminal(f"{tipo} | ESTADO: {estado}", identidad, contenido)
     
-    # TRIPLE CHECK: Solo creamos/sobrescribimos el perfil si es un usuario NUEVO.
-    # Si ya está en medio del onboarding, NO tocamos su nombre de la base de datos.
     if estado == "NUEVO":
         db.crear_usuario(user.id, user_data['username'], 
                         f"{user_data['first_name'] or ''} {user_data['last_name'] or ''}".strip(), 
@@ -66,6 +64,7 @@ async def manejar_callback(update, context):
     log_terminal(tipo, identidad, contenido)
     await query.answer()
 
+    # Botones Sofía
     if query.data == "start_flow":
         db.actualizar_campo_usuario(user.id, "estado_onboarding", "WHATSAPP")
         await manejar_paso_registro(update, context)
@@ -84,9 +83,16 @@ async def manejar_callback(update, context):
     elif query.data == "ir_a_pepe":
         db.actualizar_campo_usuario(user.id, "estado_onboarding", "PEPE_ACTIVO")
         await manejar_pepe(update, context, user.id, "¡Hola Pepe! Presentate y decime qué vamos a hacer ahora.", None)
+    
+    # Botones Pepe
+    elif query.data == "pepe_mas_contexto":
+        await context.bot.send_message(chat_id=user.id, text="🎙️ Pepe: ¡Perfecto! Te escucho. Mandame un audio, texto o PDF con lo que quieras agregar.")
+    elif query.data == "pepe_avanzar_maria":
+        db.actualizar_campo_usuario(user.id, "estado_onboarding", "MARIA_ACTIVO")
+        await manejar_maria(update, context, user.id, "¡Hola María! Pepe ya hizo el diagnóstico. ¿Qué sigue?")
 
 if __name__ == '__main__':
-    print("🚀 [SISTEMA DE TITANIO] - Ruteador Multi-Agente (Sofy-Pepe-Maria-Jose-Fausto) Activado")
+    print("🚀 [SISTEMA DE TITANIO] - Ruteador Multi-Agente Activado")
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("eraseall", ejecutar_borrado_total))
     app.add_handler(CommandHandler("start", manejar_paso_registro))

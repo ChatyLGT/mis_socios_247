@@ -1,44 +1,41 @@
-import db, re
-from core.gemini_multimodal import procesar_texto_puro, procesar_multimodal
+import db, re, asyncio
+from core.gemini_multimodal import procesar_texto_puro
 from core.grabadora import log_bot_response, log_terminal
 from agentes import maria
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 async def manejar_maria(update, context, telegram_id, texto, file_path=None):
     target = update.message if update.message else update.callback_query.message
-    adn = db.obtener_adn_completo(telegram_id)
+    adn = db.obtener_adn_completo(telegram_id) or {}
     
-    # 1. Percepción Multimodal
-    desc = ""
-    if file_path:
-        _, desc = await procesar_multimodal(file_path, "Describe este archivo para el contexto de la app.")
-        log_terminal("👁️ PERCEPCIÓN", "MARIA", desc)
-    
-    # 2. Contexto de Identidad y Bóveda
     historial = adn.get('historial_reciente') or []
-    hilo_txt = "\n".join([f"{m['rol']}: {m['txt']}" for m in historial])
-    ctx = f"Socio: {adn.get('nombre_completo')} | Negocio: {adn.get('nombre_empresa')} | Dolor: {adn.get('dolor_principal')}"
+    hilo_txt = "\n".join([f"{m['rol']}: {m['txt']}" for m in historial[-6:]]) if historial else "Sin historial aún."
     
-    prompt = f"{maria.obtener_prompt()}\n\nTU IDENTIDAD: Eres MARÍA.\n{ctx}\nARCHIVO: {desc}\nHISTORIAL:\n{hilo_txt}"
+    # Llamamos a María pasándole el telegram_id
+    prompt = f"{maria.obtener_prompt(telegram_id)}\n\nHISTORIAL RECIENTE:\n{hilo_txt}"
     
-    respuesta = await procesar_texto_puro(prompt, texto)
-    
-    # 3. Extractor Robusto de Equipo (Busca etiquetas EQUIPO: o EQUIPO=)
-    equipo_match = re.search(r'EQUIPO[:=]\s*["\']?(.*?)["\']?($|\n|FINALIZAR)', respuesta, re.IGNORECASE | re.DOTALL)
-    if equipo_match:
-        equipo_str = equipo_match.group(1).strip()
-        db.actualizar_adn(telegram_id, "estructura_equipo", equipo_str)
-        log_terminal("BÓVEDA", "MARIA", f"✅ Equipo guardado: {equipo_str}")
-
-    # 4. Lógica de Salida y Logs
-    finalizar = "FINALIZAR_ESTRATEGIA: JOSEFINA" in respuesta
-    res_limpia = re.sub(r'(FINALIZAR_ESTRATEGIA|EQUIPO[:=]).*', '', respuesta, flags=re.IGNORECASE | re.DOTALL).strip()
-    
-    log_bot_response("MARIA", res_limpia)
+    res_ia = await procesar_texto_puro(prompt, texto)
     db.guardar_memoria_hilo(telegram_id, "SOCIO", texto)
-    db.guardar_memoria_hilo(telegram_id, "MARIA", res_limpia)
 
-    if finalizar:
-        db.actualizar_campo_usuario(telegram_id, "estado_onboarding", "JOSEFINA_ACTIVO")
-        await target.reply_text(f"📊 <b>María:</b> {res_limpia}\n\n✨ <i>Pasando con Josefina...</i>", parse_mode="HTML")
+    print(f"\n--- 🕵️ FORENSE MARIA RAW ---\n{res_ia}\n-----------------------------\n")
+
+    # 1. Buscamos el semáforo para avanzar
+    estado_aprobado = False
+    if 'ESTADO_MARIA="Aprobado"' in res_ia:
+        estado_aprobado = True
+
+    # 2. Limpieza de pantalla (escondemos la etiqueta y los posibles JSON de la vista del usuario)
+    res_limpia = re.sub(r'ESTADO_MARIA=".*?"', '', res_ia).strip()
+    res_limpia = re.sub(r'```json.*?```', '', res_limpia, flags=re.DOTALL).strip()
+
+    db.guardar_memoria_hilo(telegram_id, "MARIA", res_limpia)
+    log_bot_response("MARIA", res_limpia)
+
+    # 3. La claqueta de acción
+    if estado_aprobado:
+        teclado = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🚀 Avanzar con Josefina", callback_data="maria_avanzar_josefina")]
+        ])
+        await target.reply_text(f"<b>María:</b> {res_limpia}", reply_markup=teclado, parse_mode="HTML")
     else:
-        await target.reply_text(f"📊 <b>María:</b> {res_limpia}", parse_mode="HTML")
+        await target.reply_text(f"<b>María:</b> {res_limpia}", parse_mode="HTML")
